@@ -1,0 +1,101 @@
+name: UPC Citation Tracker
+
+on:
+  schedule:
+    # Läuft täglich um 2:00 UTC (3:00 MEZ / 4:00 MESZ)
+    - cron: '0 2 * * *'
+  workflow_dispatch: # Ermöglicht manuelles Starten
+  push:
+    branches: [ main ]
+
+jobs:
+  scrape-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+        fetch-depth: 0
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests beautifulsoup4 PyPDF2 lxml html5lib
+    
+    - name: Create Data Directory
+      run: mkdir -p data
+    
+    - name: Download Previous Database (if exists)
+      continue-on-error: true
+      run: |
+        # Versuche vorherige Datenbank aus GitHub Pages zu laden
+        curl -f -o data/upc_decisions.db https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/upc_decisions.db || echo "No previous database found"
+    
+    - name: Run UPC Scraper
+      run: |
+        cd data
+        python ../upc_scraper.py
+      env:
+        PYTHONPATH: ${{ github.workspace }}
+    
+    - name: Generate Statistics
+      run: |
+        cd data
+        python ../generate_stats.py
+    
+    - name: Prepare GitHub Pages
+      run: |
+        # Kopiere HTML-Dateien ins root für GitHub Pages
+        cp data/upc_top_100.html index.html
+        cp data/upc_statistics.html statistics.html
+        cp data/upc_decisions.db upc_decisions.db
+        
+        # Erstelle eine einfache Navigation
+        cat > nav.html << 'EOF'
+        <div style="background: #667eea; padding: 20px; margin-bottom: 20px; border-radius: 10px;">
+          <nav style="text-align: center;">
+            <a href="index.html" style="color: white; text-decoration: none; margin: 0 20px; font-weight: bold;">Top 100 Citations</a>
+            <a href="statistics.html" style="color: white; text-decoration: none; margin: 0 20px; font-weight: bold;">Statistics</a>
+            <a href="upc_decisions.db" style="color: white; text-decoration: none; margin: 0 20px; font-weight: bold;">Download Database</a>
+          </nav>
+        </div>
+        EOF
+        
+        # Füge Navigation zu beiden HTML-Dateien hinzu
+        sed -i '/<body>/r nav.html' index.html
+        sed -i '/<body>/r nav.html' statistics.html
+    
+    - name: Deploy to GitHub Pages
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./
+        publish_branch: gh-pages
+        keep_files: false
+        commit_message: 'Auto-update UPC citations data'
+    
+    - name: Create Release with Database
+      if: github.ref == 'refs/heads/main'
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: data-${{ github.run_number }}
+        name: UPC Data Release ${{ github.run_number }}
+        body: |
+          Automated data update from ${{ github.run_time }}
+          
+          - **Top 100 Report**: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+          - **Statistics**: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/statistics.html
+          - **Database**: Download the SQLite database file below
+        files: |
+          data/upc_decisions.db
+          data/upc_scraper.log
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
